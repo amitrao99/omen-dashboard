@@ -71,8 +71,10 @@ def energy():
 # RAPL baseline, taken now so its average covers the same span as the battery sample.
 zones = {}
 for z in sorted(POWERCAP.glob("intel-rapl*")):
+    if not (z / "energy_uj").exists():
+        continue  # the "intel-rapl" control folder itself has no counter
     name, raw = read(z / "name"), read(z / "energy_uj")
-    zones[z] = (name, int(raw) if raw and raw.isdigit() else None)
+    zones[z] = (name or "?", int(raw) if raw and raw.isdigit() else None)
 
 print(f"\n== Sampling {key} every {PERIOD * 1000:.0f} ms for {DURATION:.0f} s ...")
 start = time.monotonic()
