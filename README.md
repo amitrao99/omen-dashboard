@@ -49,6 +49,8 @@ On an OMEN 16 (i7-11800H, RTX 3070 Laptop GPU), the laptop drew 46 W while idle 
 | NVIDIA driver loaded, GPU kept awake by the desktop and apps | 22.6 W |
 | The setup below: GPU powered off | 14.5 W |
 
+The full investigation, including the false leads, is in [docs/battery-drain-rca.md](docs/battery-drain-rca.md).
+
 The setup below is for a laptop that never uses the NVIDIA GPU. Its driver stays loaded only to keep the GPU switched off. Games and other graphics on the NVIDIA GPU stop working, and so does a monitor plugged into a port wired to it.
 
 Each step is done once and survives reboots. Run them from the repository folder:
