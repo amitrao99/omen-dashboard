@@ -287,6 +287,7 @@ def collect_report(before, after, zones, args, gpu=None, battery_before=None):
         row(sample["label"], sample["value"], sample["detail"])
     metrics["gpu_temp"] = next((s["temp"] for s in samples if s["temp"] is not None), None)
     metrics["gpu_power"] = next((s["power"] for s in samples if s["power"] is not None), None)
+    metrics["gpu_asleep"] = any(s.get("asleep") for s in samples)
     for sensor in Path("/sys/class/hwmon").glob("hwmon*"):
         name = read(sensor / "name") or sensor.name
         for path in sorted(sensor.glob("power*_input")):

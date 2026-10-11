@@ -33,6 +33,8 @@ class ConfigDict(TypedDict, total=False):
     cached_board_name: str | None
     debug_experimental_ui: bool
     reference_sensor: str
+    power_battery_window_s: float
+    power_calibration_window_s: float
     log_level: str
     cleaner_enabled: bool
     cleaner_in_progress: bool
@@ -92,6 +94,8 @@ DEFAULT_CONFIG: ConfigDict = {
     "cached_board_name": None,
     "debug_experimental_ui": False,
     "reference_sensor": "cpu",
+    "power_battery_window_s": 15,  # battery counter steps ~12 mWh every ~3 s: shorter windows are noise
+    "power_calibration_window_s": 60,
     "use_manual_max_rpm": False,
     "manual_cpu_max_rpm": 6000,
     "manual_gpu_max_rpm": 5800,

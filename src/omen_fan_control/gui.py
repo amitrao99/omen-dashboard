@@ -26,11 +26,12 @@ from PyQt6.QtWidgets import (
 )
 
 from . import get_assets_dir
-from . import power_report
+from . import laptop_power, power_report
 from .fan_controller import FanController
 from .fan_curve_widget import FanCurveEditor
 
 POWER_INTERVAL = 2.0  # seconds between power and activity samples
+LIVE_POWER_INTERVAL = 1.0  # seconds between LAPTOP POWER readings
 GPU_INTERVAL = 10.0  # nvidia-smi can wake a sleeping dGPU, so it is polled slowly
 GPU_IDLE_INTERVAL = 60.0  # back off further while the GPU does not answer
 TOP_PROCESSES = 8
@@ -166,6 +167,34 @@ class PowerSampler(QThread):
                 before = after
             except Exception as error:
                 self.failed.emit(f"Power sample failed: {error}")
+
+
+class LaptopPowerSampler(QThread):
+    """Reads the battery and CPU chip counters every second, off the GUI thread: battery reads go through ACPI."""
+
+    updated = pyqtSignal(object)
+
+    def __init__(self, battery_window: float, calibration_window: float):
+        super().__init__()
+        self.estimator = laptop_power.LaptopPowerEstimator(battery_window, calibration_window)
+        self._stopping = threading.Event()
+
+    def stop(self):
+        self._stopping.set()
+        self.wait(3000)
+
+    def run(self):
+        try:
+            zones = laptop_power.package_zones()
+        except OSError:
+            zones = []
+        while True:
+            try:
+                self.updated.emit(self.estimator.update(time.monotonic(), laptop_power.read_sample(zones)))
+            except Exception:
+                pass  # a failed read is a gap in the graph, which the next second fills
+            if self._stopping.wait(LIVE_POWER_INTERVAL):
+                return
 
 
 class Chip(QWidget):
@@ -371,10 +400,102 @@ class HistoryChart(QWidget):
         painter.drawPath(path)
 
 
-class Tile(QFrame):
-    """Metric card: caption, big value, a short note and a sparkline."""
+class PowerChart(QWidget):
+    """Last two minutes of laptop power on a scale from 0 W: the live estimate and the battery average.
 
-    def __init__(self, caption: str, color: str):
+    A missing reading leaves a gap. Live readings made on an old calibration (on the charger) are dashed.
+    """
+
+    SPAN = 120.0  # seconds shown
+
+    def __init__(self, battery_window: float):
+        super().__init__()
+        self._points = deque()  # (time, live W, battery W, live is estimated)
+        self._legend = (("Live · 1 s", PALETTE["amber"]), (f"Battery · {battery_window:g} s avg", PALETTE["blue"]))
+        self.setMinimumHeight(64)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+    def sizeHint(self):
+        return QSize(160, 96)
+
+    def push(self, now: float, live, battery, estimated: bool):
+        self._points.append((now, live, battery, estimated))
+        while self._points and now - self._points[0][0] > self.SPAN:
+            self._points.popleft()
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        small = QFont(self.font())
+        small.setPointSizeF(max(small.pointSizeF() - 1.5, 7))
+        painter.setFont(small)
+        metrics = QFontMetrics(small)
+
+        x = 0
+        for text, color in self._legend:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(QPointF(x + 4, 8), 3.5, 3.5)
+            painter.setPen(QColor(PALETTE["muted"]))
+            painter.drawText(QRectF(x + 12, 0, 200, 16), Qt.AlignmentFlag.AlignVCenter, text)
+            x += 24 + metrics.horizontalAdvance(text)
+
+        rect = QRectF(self.rect()).adjusted(0, 22, -(metrics.horizontalAdvance("88 W") + 6), -2)
+        values = [v for _, live, battery, _ in self._points for v in (live, battery) if v is not None]
+        top = max(5.0, -(-max(values, default=0) * 1.15 // 5) * 5)  # next 5 W above the peak, at least 5 W
+        for fraction in (0.5, 1.0):
+            y = rect.bottom() - fraction * rect.height()
+            painter.setPen(QPen(QColor(PALETTE["edge"]), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+            painter.setPen(QColor(PALETTE["faint"]))
+            painter.drawText(QRectF(rect.right() + 4, y - 8, 40, 16), Qt.AlignmentFlag.AlignVCenter,
+                             f"{top * fraction:g} W")
+        painter.setPen(QPen(QColor(PALETTE["edge"]), 1))
+        painter.drawLine(QPointF(rect.left(), rect.bottom()), QPointF(rect.right(), rect.bottom()))
+
+        if self._points:
+            newest = self._points[-1][0]
+
+            def point(t, watts):
+                return QPointF(rect.right() - (newest - t) / self.SPAN * rect.width(),
+                               rect.bottom() - min(watts, top) / top * rect.height())
+
+            self._draw(painter, [(t, b, False) for t, _, b, _ in self._points], point, PALETTE["blue"])
+            self._draw(painter, [(t, live, est) for t, live, _, est in self._points], point, PALETTE["amber"])
+        painter.end()
+
+    @staticmethod
+    def _draw(painter, series, point, color):
+        """One line, broken at missing readings and wherever the dashed/solid style changes."""
+        runs, run, previous = [], [], None
+        for t, watts, dashed in series:
+            gap = watts is None or (previous is not None and t - previous[0] > 2.5)
+            if gap or (previous is not None and dashed != previous[1]):
+                if len(run) > 1:
+                    runs.append((run, previous[1]))
+                run = [] if gap else run[-1:]  # a style change keeps the line joined
+            if watts is not None:
+                run.append(point(t, watts))
+                previous = (t, dashed)
+            else:
+                previous = None
+        if len(run) > 1:
+            runs.append((run, previous[1]))
+        for points, dashed in runs:
+            path = QPainterPath(points[0])
+            for p in points[1:]:
+                path.lineTo(p)
+            style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
+            painter.setPen(QPen(QColor(color), 1.8, style, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
+
+class Tile(QFrame):
+    """Metric card: caption, big value, a short note and a sparkline (or another chart)."""
+
+    def __init__(self, caption: str, color: str, chart: QWidget | None = None):
         super().__init__()
         self.setObjectName("Card")
         layout = QVBoxLayout(self)
@@ -389,7 +510,7 @@ class Tile(QFrame):
         for label in (title, self.value, self.note):
             # Text can be clipped, but it must never widen the layout and make the window jump.
             label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.spark = Sparkline(color)
+        self.spark = chart or Sparkline(color)
         layout.addWidget(title)
         layout.addWidget(self.value)
         layout.addWidget(self.note)
@@ -399,7 +520,8 @@ class Tile(QFrame):
     def set_values(self, value: str, note: str, series=None):
         self.value.setText(value)
         self.note.setText(note)
-        self.spark.push(series)
+        if series is not None:
+            self.spark.push(series)
 
 
 class ReadingsTree(QTreeWidget):
@@ -548,6 +670,7 @@ class Dashboard(QMainWindow):
         self.ctl = controller or FanController()
         self.is_root = os.geteuid() == 0
         self.has_gpu = self.ctl.has_gpu()
+        self.gpu_asleep = power_report.nvidia_gpu_asleep()  # asleep, it has no temperature to drive the curve
         self.board_status, self.board_name = self.ctl.check_board_support()
         self.driver_ok = False
         self.service_running = False
@@ -564,10 +687,14 @@ class Dashboard(QMainWindow):
         self.banner_key = None
         self.badge_key = None
         self.sampler = PowerSampler(POWER_INTERVAL)
+        cfg = self.ctl.config
+        self.battery_window = float(cfg.get("power_battery_window_s", 15))
+        self.live_sampler = LaptopPowerSampler(self.battery_window, float(cfg.get("power_calibration_window_s", 60)))
 
         self._build_ui()
         self.sampler.updated.connect(self._on_power)
         self.sampler.failed.connect(self.statusBar().showMessage)
+        self.live_sampler.updated.connect(self._on_laptop_power)
 
         self.tick_timer = QTimer(self)
         self.tick_timer.timeout.connect(self._tick)
@@ -585,6 +712,7 @@ class Dashboard(QMainWindow):
         self.tick_timer.start(1000)
         self.slow_timer.start(5000)
         self.sampler.start()
+        self.live_sampler.start()
 
         geometry = self.frameGeometry()
         geometry.moveCenter(self.screen().availableGeometry().center())
@@ -853,9 +981,13 @@ class Dashboard(QMainWindow):
         tiles = QGridLayout()
         tiles.setSpacing(12)
         self.tile_temp = Tile("CPU TEMPERATURE", PALETTE["red"])
-        self.tile_power = Tile("LAPTOP POWER", PALETTE["amber"])
-        self.tile_power.setToolTip("Whole-laptop draw, from the battery's energy counter: shown on battery, after about 30 s.\n"
-                                   "The CPU chip reading below it is part of that draw, not extra.")
+        self.power_chart = PowerChart(self.battery_window)
+        self.tile_power = Tile("LAPTOP POWER", PALETTE["amber"], self.power_chart)
+        self.tile_power.setToolTip(
+            "Live (amber, every second): the CPU chip's reading plus the rest of the laptop, calibrated against the\n"
+            "battery over the last minute. Dashed on the charger, where it runs on the last calibration.\n"
+            f"Battery (blue): the battery's own energy counter averaged over {self.battery_window:g} s; on battery only.\n"
+            "The CPU chip reading in the note is part of the total, not extra.")
         self.tile_busy = Tile("CPU LOAD", PALETTE["green"])
         self.tile_ram = Tile("MEMORY", PALETTE["violet"])
         for index, tile in enumerate((self.tile_temp, self.tile_power, self.tile_busy, self.tile_ram)):
@@ -893,8 +1025,14 @@ class Dashboard(QMainWindow):
         self._sync_sensor_buttons()
 
     def _reference(self) -> str:
+        """The sensor the curve actually reads. A sleeping GPU has no temperature, so the CPU stands in for it."""
         sensor = self.ctl.config.get("reference_sensor", "cpu")
-        return "gpu" if sensor == "gpu" and self.has_gpu else "cpu"
+        return "gpu" if sensor == "gpu" and self.has_gpu and not self.gpu_asleep else "cpu"
+
+    def _reference_note(self) -> str:
+        if self.ctl.config.get("reference_sensor") == "gpu" and self._reference() == "cpu":
+            return "Curve reads CPU · GPU is off"
+        return f"Curve reads {self._reference().upper()}"
 
     def _control_temp(self, cpu_temp: int) -> int:
         if self._reference() == "gpu" and self.gpu_temp:
@@ -995,6 +1133,10 @@ class Dashboard(QMainWindow):
         reference = self._reference()
         self.sensor_cpu.setChecked(reference == "cpu")
         self.sensor_gpu.setChecked(reference == "gpu")
+        self.sensor_gpu.setEnabled(not self.gpu_asleep)
+        self.sensor_gpu.setToolTip(
+            "The NVIDIA GPU is powered off, so it has no temperature. The curve uses the CPU until the GPU wakes."
+            if self.gpu_asleep else "Sensor that drives the fan curve")
         self.sensor_bar.setVisible(self.has_gpu)
 
     # ----- periodic updates -----
@@ -1035,8 +1177,7 @@ class Dashboard(QMainWindow):
         cpu_temp = self.ctl.get_cpu_temp()
         temp = self._control_temp(cpu_temp)
         self.header_temp.setText(f"{temp} °C" if temp else "— °C")
-        self.tile_temp.set_values(f"{cpu_temp} °C" if cpu_temp else "—",
-                                  f"Curve reads {self._reference().upper()}", cpu_temp or None)
+        self.tile_temp.set_values(f"{cpu_temp} °C" if cpu_temp else "—", self._reference_note(), cpu_temp or None)
         cpu_percent = round(100 * cpu_rpm / cpu_max) if cpu_max > 0 else None
         self.curve.set_live(temp or None, cpu_percent)
         gpu_percent = round(100 * gpu_rpm / gpu_max) if gpu_max > 0 else 0
@@ -1066,27 +1207,11 @@ class Dashboard(QMainWindow):
     def _on_power(self, report: dict):
         metrics = report["metrics"]
         self.gpu_temp = metrics.get("gpu_temp")
-        if self.gpu_temp is not None and not self.has_gpu:
-            self.has_gpu = True
+        asleep = bool(metrics.get("gpu_asleep"))
+        if (self.gpu_temp is not None and not self.has_gpu) or asleep != self.gpu_asleep:
+            self.has_gpu = self.has_gpu or self.gpu_temp is not None
+            self.gpu_asleep = asleep
             self._sync_sensor_buttons()
-
-        # The big number and the graph are only ever the whole laptop. The CPU chip is part of that draw, so it sits in
-        # the note; putting it in the big number while the laptop figure was missing made the reading look like it jumped.
-        draw, package = metrics.get("battery_draw_w"), metrics.get("cpu_package_w")
-        if package is not None:
-            cpu = f"CPU chip {package:.1f} W"
-        else:
-            cpu = "CPU chip needs sudo" if not self.is_root else "CPU chip: no sensor"
-        if draw is not None:
-            self.tile_power.set_values(f"{draw:.1f} W", f"Whole laptop · {cpu}", draw)
-        else:
-            if metrics.get("external_power"):
-                status = "On charger"
-            elif metrics.get("battery_pct") is None:
-                status = "No battery"
-            else:
-                status = "Measuring (30 s)"
-            self.tile_power.set_values("—", f"{status} · {cpu}", None)
 
         busy = metrics.get("cpu_busy")
         self.tile_busy.set_values(f"{busy:.0f}%" if busy is not None else "—",
@@ -1106,6 +1231,26 @@ class Dashboard(QMainWindow):
         self.process_table.update_rows(report["processes"])
         self.notes.setText("\n".join(report["notes"]))
         self.sample_label.setText(f"Power sample {report['elapsed']:.1f} s · {report['timestamp'][11:]}")
+
+    def _on_laptop_power(self, reading: dict):
+        """Every second. The big number is the live estimate, or the battery average while there is none."""
+        live, battery, cpu_w = reading["live_w"], reading["battery_w"], reading["cpu_w"]
+        self.power_chart.push(time.monotonic(), live, battery, reading["estimated"])
+        if cpu_w is not None:
+            cpu = f"CPU chip {cpu_w:.1f} W"
+        else:
+            cpu = "CPU chip needs sudo" if not self.is_root else "CPU chip: no sensor"
+        window = f"{self.battery_window:g} s"
+        if not reading["has_battery"]:
+            status = "No battery"
+        elif reading["on_ac"]:
+            status = "On charger · estimated" if live is not None else "On charger · unplug to calibrate"
+        elif battery is None:
+            status = f"Calibrating ({window})"
+        else:
+            status = f"Battery {battery:.1f} W ({window})"
+        shown = live if live is not None else battery
+        self.tile_power.set_values(f"{shown:.1f} W" if shown is not None else "—", f"{status} · {cpu}")
 
     # ----- window -----
 
@@ -1294,6 +1439,7 @@ class Dashboard(QMainWindow):
         for timer in (self.tick_timer, self.slow_timer, self.watchdog_timer, self.stress_timer):
             timer.stop()
         self.sampler.stop()
+        self.live_sampler.stop()
         self._set_resize_cursor(Qt.Edge(0))
         QApplication.instance().removeEventFilter(self)
         super().closeEvent(event)
