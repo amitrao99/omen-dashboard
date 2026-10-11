@@ -1,277 +1,235 @@
+"""Temperature-to-fan-speed curve editor used by the dashboard."""
 
-from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QLinearGradient
-import sys
+from __future__ import annotations
+
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import QWidget
+
+MAX_TEMP = 105
+DEFAULT_CURVE = [(40, 20), (55, 40), (70, 65), (85, 90), (95, 100)]
+
+BACKGROUND = QColor("#10131a")
+GRID = QColor("#262d3b")
+MUTED = QColor("#8b94a8")
+INK = QColor("#e8ebf2")
+THEMES = {
+    "cpu": (("#ffb020", "#e5484d"), ("#ffb020", "#e5484d")),
+    "gpu": (("#00c2ff", "#3b6fe0"), ("#00a6ff", "#3b6fe0")),
+}
+
 
 class FanCurveEditor(QWidget):
+    """Drag points to reshape the curve, right-click to add one, middle-click to remove one."""
+
     curveChanged = pyqtSignal(list)
+    LEFT, RIGHT, TOP, BOTTOM = 46, 18, 16, 30
 
     def __init__(self, points=None):
         super().__init__()
-        self.setMinimumSize(400, 300)
-        self.max_temp = 105
-        if points:
-            self.points = [QPointF(x, y) for x, y in points]
-            if self.points:
-                last = self.points[-1]
-                if last.x() != self.max_temp:
-                    self.points[-1] = QPointF(self.max_temp, last.y())
-        else:
-            self.points = [
-                QPointF(30, 0),
-                QPointF(40, 10),
-                QPointF(50, 25),
-                QPointF(60, 40),
-                QPointF(70, 55),
-                QPointF(80, 70),
-                QPointF(90, 85),
-                QPointF(95, 100),
-                QPointF(105, 100)
-            ]
-        
-        self.dragging_index = -1
+        self.setMinimumSize(340, 168)
+        self.setMouseTracking(True)
+        self.theme = "cpu"
+        self.live = None
         self.hover_index = -1
-        self.margin = 40
-        
-        self.bg_color = QColor(20, 20, 20)
-        self.grid_color = QColor(60, 60, 60)
-        self.line_color = QColor(255, 50, 50)
-        self.point_color = QColor(255, 255, 255)
-        self.fill_color = QColor(255, 50, 50, 50)
+        self.dragging_index = -1
+        self.points: list[QPointF] = []
+        self.set_points(points)
 
-    def paintEvent(self, event):
+    def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        painter.fillRect(self.rect(), self.bg_color)
-        
-        w = self.width() - 2 * self.margin
-        h = self.height() - 2 * self.margin
-        
-        painter.setPen(QPen(self.grid_color, 1, Qt.PenStyle.DashLine))
-        for i in range(0, 11, 2):
-            y = self.margin + h - (i * h / 10)
-            painter.drawLine(self.margin, int(y), self.margin + w, int(y))
-            painter.drawText(5, int(y) + 5, f"{i*10}%")
-        
-        steps = 7
-        for i in range(steps + 1):
-            val = i * (self.max_temp / steps)
-            x = self.margin + (val / self.max_temp * w)
-            painter.drawLine(int(x), self.margin, int(x), self.margin + h)
-            painter.drawText(int(x) - 10, self.height() - 10, f"{int(val)}°C")
-
-        screen_points = []
-        for p in self.points:
-            sx = self.margin + (p.x() / self.max_temp * w)
-            sy = self.margin + h - (p.y() / 100 * h)
-            screen_points.append(QPointF(sx, sy))
-
-        if not screen_points:
-            return
-
-        from PyQt6.QtGui import QPainterPath
-        path = QPainterPath()
-        path.moveTo(self.margin, self.margin + h)
-        
-        for p in screen_points:
-            path.lineTo(p)
-            
-        path.lineTo(screen_points[-1].x(), self.margin + h)
-        path.closeSubpath()
-        
-        gradient = QLinearGradient(self.margin, 0, self.margin + w, 0)
-        line_gradient = QLinearGradient(self.margin, 0, self.margin + w, 0)
-        
-        if getattr(self, "theme", "cpu") == "gpu":
-            gradient.setColorAt(0, QColor(0, 220, 255, 120)) 
-            gradient.setColorAt(1, QColor(0, 100, 255, 60))
-            line_gradient.setColorAt(0, QColor("#0090ff")) 
-            line_gradient.setColorAt(1, QColor("#2060c0"))
-        else:
-            gradient.setColorAt(0, QColor(255, 220, 30, 100)) 
-            gradient.setColorAt(1, QColor(214, 51, 51, 100))
-            line_gradient.setColorAt(0, QColor("#ff9800")) 
-            line_gradient.setColorAt(1, QColor("#d63333"))
-        
-        painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPath(path)
-        
-        line_pen = QPen(QBrush(line_gradient), 3)
-        line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        line_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        
-        painter.setPen(line_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        
-        line_path = QPainterPath()
-        if screen_points:
-            line_path.moveTo(screen_points[0])
-            for p in screen_points[1:]:
-                line_path.lineTo(p)
-        
-        painter.drawPath(line_path)
+        painter.setBrush(BACKGROUND)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
 
-        for i, p in enumerate(screen_points):
-            size = 12 if i == self.hover_index or i == self.dragging_index else 8
-            painter.setBrush(self.point_color)
-            if i == self.hover_index:
-                painter.setBrush(QColor(255, 100, 100))
-            
+        plot = self._plot()
+        painter.setPen(QPen(GRID, 1, Qt.PenStyle.DashLine))
+        for pct in range(0, 101, 20):
+            y = self._to_screen(QPointF(0, pct)).y()
+            painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+        for temp in range(0, MAX_TEMP + 1, 15):
+            x = self._to_screen(QPointF(temp, 0)).x()
+            painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+
+        painter.setPen(MUTED)
+        for pct in range(0, 101, 20):
+            y = self._to_screen(QPointF(0, pct)).y()
+            painter.drawText(QRectF(0, y - 8, self.LEFT - 8, 16),
+                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{pct}%")
+        for temp in range(0, MAX_TEMP + 1, 15):
+            x = self._to_screen(QPointF(temp, 0)).x()
+            painter.drawText(QRectF(x - 20, plot.bottom() + 6, 40, 16),
+                             Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, f"{temp}°")
+
+        screen = [self._to_screen(p) for p in self.points]
+        if screen:
+            outline = QPainterPath(QPointF(plot.left(), screen[0].y()))
+            for spot in screen:
+                outline.lineTo(spot)
+            area = QPainterPath(outline)
+            area.lineTo(plot.right(), plot.bottom())
+            area.lineTo(plot.left(), plot.bottom())
+            area.closeSubpath()
+
+            fill_colors, line_colors = THEMES[self.theme]
+            fill = QLinearGradient(plot.left(), 0, plot.right(), 0)
+            start, end = (QColor(c) for c in fill_colors)
+            start.setAlpha(110)
+            end.setAlpha(60)
+            fill.setColorAt(0, start)
+            fill.setColorAt(1, end)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(p, size/2, size/2)
-            
-            text = f"{int(self.points[i].x())}°C, {int(self.points[i].y())}%"
-            painter.setPen(QColor(200, 200, 200))
-            painter.drawText(int(p.x()) - 20, int(p.y()) - 15, text)
+            painter.setBrush(QBrush(fill))
+            painter.drawPath(area)
+
+            stroke = QLinearGradient(plot.left(), 0, plot.right(), 0)
+            start, end = (QColor(c) for c in line_colors)
+            stroke.setColorAt(0, start)
+            stroke.setColorAt(1, end)
+            painter.setPen(QPen(QBrush(stroke), 3, Qt.PenStyle.SolidLine,
+                                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(outline)
+
+            for index, spot in enumerate(screen):
+                active = index in (self.hover_index, self.dragging_index)
+                radius = 6.5 if active else 4.5
+                painter.setPen(QPen(BACKGROUND, 2))
+                painter.setBrush(QColor("#ff7a7a") if active else INK)
+                painter.drawEllipse(spot, radius, radius)
+
+            index = self.dragging_index if self.dragging_index >= 0 else self.hover_index
+            if 0 <= index < len(self.points):
+                point = self.points[index]
+                self._draw_tag(painter, screen[index], f"{point.x():.0f}°C · {point.y():.0f}%", -16)
+
+        if self.live is not None:
+            spot = self._to_screen(self.live)
+            painter.setPen(QPen(INK, 1.5))
+            painter.setBrush(QColor(255, 255, 255, 50))
+            painter.drawEllipse(spot, 8, 8)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(INK)
+            painter.drawEllipse(spot, 3, 3)
+            self._draw_tag(painter, spot, f"now {self.live.x():.0f}°C · {self.live.y():.0f}%", -18)
+        painter.end()
 
     def mousePressEvent(self, event):
-        w = self.width() - 2 * self.margin
-        h = self.height() - 2 * self.margin
         pos = event.position()
-        btn = event.button()
-        
-        # Middle Click -> Remove Point
-        if btn == Qt.MouseButton.MiddleButton:
-            if len(self.points) <= 2:
-                return  # Keep at least 2 points for a valid curve
-            for i, p in enumerate(self.points):
-                sx = self.margin + (p.x() / self.max_temp * w)
-                sy = self.margin + h - (p.y() / 100 * h)
-                dist = ((pos.x() - sx)**2 + (pos.y() - sy)**2)**0.5
-                if dist < 15:
-                    self.points.pop(i)
-                    if self.points:
-                        last = self.points[-1]
-                        if last.x() != self.max_temp:
-                            self.points[-1] = QPointF(self.max_temp, last.y())
-                    self.curveChanged.emit([(p.x(), p.y()) for p in self.points])
-                    self.update()
-                    return
-            return
-
-        # Right Click -> Add Point
-        if btn == Qt.MouseButton.RightButton:
-            new_x = max(0, min(self.max_temp, (pos.x() - self.margin) / w * self.max_temp))
-            raw_y = max(0, min(100, (self.margin + h - pos.y()) / h * 100))
-            
-            # Ignore if right-clicking directly on top of existing point
-            for p in self.points:
-                sx = self.margin + (p.x() / self.max_temp * w)
-                sy = self.margin + h - (p.y() / 100 * h)
-                dist = ((pos.x() - sx)**2 + (pos.y() - sy)**2)**0.5
-                if dist < 12:
-                    return
-
-            # Determine bounds (prev_y and next_y) for monotonic order
-            temp_points = sorted(self.points, key=lambda p: p.x())
-            prev_y = 0.0
-            next_y = 100.0
-            for p in temp_points:
-                if p.x() <= new_x:
-                    prev_y = p.y()
-                if p.x() >= new_x:
-                    next_y = p.y()
-                    break
-
-            clamped_y = min(next_y, max(prev_y, raw_y))
-
-            self.points.append(QPointF(new_x, clamped_y))
-            self.points.sort(key=lambda p: p.x())
-            
-            if self.points:
-                last = self.points[-1]
-                if last.x() != self.max_temp:
-                    self.points[-1] = QPointF(self.max_temp, last.y())
-                    
-            self.curveChanged.emit([(p.x(), p.y()) for p in self.points])
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging_index = self._point_at(pos, 15)
             self.update()
-            return
-
-        # Left Click -> Drag Point
-        if btn == Qt.MouseButton.LeftButton:
-            for i, p in enumerate(self.points):
-                sx = self.margin + (p.x() / self.max_temp * w)
-                sy = self.margin + h - (p.y() / 100 * h)
-                dist = ((pos.x() - sx)**2 + (pos.y() - sy)**2)**0.5
-                if dist < 15:
-                    self.dragging_index = i
-                    self.update()
-                    return
+        elif event.button() == Qt.MouseButton.RightButton:
+            if self._point_at(pos, 12) < 0:
+                self._add_point(pos)
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            index = self._point_at(pos, 15)
+            if index >= 0 and len(self.points) > 2:  # Keep at least two points for a valid curve.
+                del self.points[index]
+                self._finish_edit()
 
     def mouseMoveEvent(self, event):
-        w = self.width() - 2 * self.margin
-        h = self.height() - 2 * self.margin
         pos = event.position()
-        
-        self.hover_index = -1
-        for i, p in enumerate(self.points):
-            sx = self.margin + (p.x() / self.max_temp * w)
-            sy = self.margin + h - (p.y() / 100 * h)
-            dist = ((pos.x() - sx)**2 + (pos.y() - sy)**2)**0.5
-            if dist < 15:
-                self.hover_index = i
-                break
-        
-        if self.dragging_index != -1:
-            new_x = (pos.x() - self.margin) / w * self.max_temp
-            new_y = (self.margin + h - pos.y()) / h * 100
-            
-            min_x = 0
-            if self.dragging_index > 0:
-                min_x = self.points[self.dragging_index - 1].x()
-                
-            max_x = self.max_temp
-            if self.dragging_index < len(self.points) - 1:
-                max_x = self.points[self.dragging_index + 1].x()
-            
-            new_x = max(min_x, min(max_x, new_x))
+        hover = self._point_at(pos, 15)
+        if hover != self.hover_index:
+            self.hover_index = hover
+            self.update()
+        if self.dragging_index < 0:
+            return
 
-            min_y = 0
-            if self.dragging_index > 0:
-                min_y = self.points[self.dragging_index - 1].y()
-                
-            max_y = 100
-            if self.dragging_index < len(self.points) - 1:
-                max_y = self.points[self.dragging_index + 1].y()
-            
-            new_y = max(min_y, min(max_y, new_y))
-            
-            if self.dragging_index == len(self.points) - 1:
-                new_x = self.max_temp
-            
-            self.points[self.dragging_index] = QPointF(new_x, new_y)
-            
-            self.curveChanged.emit([(p.x(), p.y()) for p in self.points])
-            
+        index = self.dragging_index
+        raw = self._to_curve(pos)
+        last = len(self.points) - 1
+        min_x = self.points[index - 1].x() if index > 0 else 0
+        max_x = self.points[index + 1].x() if index < last else MAX_TEMP
+        min_y = self.points[index - 1].y() if index > 0 else 0
+        max_y = self.points[index + 1].y() if index < last else 100
+        x = MAX_TEMP if index == last else min(max_x, max(min_x, raw.x()))
+        y = min(max_y, max(min_y, raw.y()))
+        self.points[index] = QPointF(x, y)
+        self.curveChanged.emit(self.get_points())
         self.update()
 
-    def mouseReleaseEvent(self, event):
-        self.dragging_index = -1
+    def mouseReleaseEvent(self, _event):
+        if self.dragging_index >= 0:
+            self.dragging_index = -1
+            self.update()
+
+    def leaveEvent(self, _event):
+        self.hover_index = -1
         self.update()
 
     def get_points(self):
         return [(p.x(), p.y()) for p in self.points]
 
     def set_points(self, points):
-        if not points:
-            points = [(40, 20), (55, 40), (70, 65), (85, 90), (95, 100)]
-        self.points = [QPointF(x, y) for x, y in points]
-        if self.points:
-             last = self.points[-1]
-             if last.x() != self.max_temp:
-                 self.points[-1] = QPointF(self.max_temp, last.y())
+        self.points = [QPointF(x, y) for x, y in (points or DEFAULT_CURVE)]
+        self._finish_edit(emit=False)
+
+    def set_live(self, temp, percent):
+        """Mark where the running system sits on the curve; None hides the marker."""
+        live = None if temp is None or percent is None else QPointF(temp, percent)
+        if live == self.live:
+            return
+        self.live = live
         self.update()
 
     def set_theme(self, theme: str = "cpu"):
         self.theme = theme
         self.update()
-        self.curveChanged.emit([(p.x(), p.y()) for p in self.points])
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    ex = FanCurveEditor()
-    ex.show()
-    sys.exit(app.exec())
+    def _plot(self) -> QRectF:
+        return QRectF(self.LEFT, self.TOP, self.width() - self.LEFT - self.RIGHT,
+                      self.height() - self.TOP - self.BOTTOM)
+
+    def _to_screen(self, point: QPointF) -> QPointF:
+        plot = self._plot()
+        return QPointF(plot.left() + point.x() / MAX_TEMP * plot.width(),
+                       plot.bottom() - point.y() / 100 * plot.height())
+
+    def _to_curve(self, pos: QPointF) -> QPointF:
+        plot = self._plot()
+        return QPointF((pos.x() - plot.left()) / plot.width() * MAX_TEMP,
+                       (plot.bottom() - pos.y()) / plot.height() * 100)
+
+    def _point_at(self, pos: QPointF, radius: float) -> int:
+        for index, point in enumerate(self.points):
+            spot = self._to_screen(point)
+            if (pos.x() - spot.x()) ** 2 + (pos.y() - spot.y()) ** 2 < radius * radius:
+                return index
+        return -1
+
+    def _add_point(self, pos: QPointF):
+        raw = self._to_curve(pos)
+        temp = min(MAX_TEMP, max(0, raw.x()))
+        pct = min(100, max(0, raw.y()))
+        # Keep the new point between its neighbours so the curve stays monotonic.
+        prev_y, next_y = 0.0, 100.0
+        for point in sorted(self.points, key=lambda p: p.x()):
+            if point.x() <= temp:
+                prev_y = point.y()
+            if point.x() >= temp:
+                next_y = point.y()
+                break
+        self.points.append(QPointF(temp, min(next_y, max(prev_y, pct))))
+        self._finish_edit()
+
+    def _finish_edit(self, emit=True):
+        self.points.sort(key=lambda p: p.x())
+        if self.points and self.points[-1].x() != MAX_TEMP:
+            self.points[-1] = QPointF(MAX_TEMP, self.points[-1].y())
+        if emit:
+            self.curveChanged.emit(self.get_points())
+        self.update()
+
+    def _draw_tag(self, painter: QPainter, anchor: QPointF, text: str, dy: float):
+        width = painter.fontMetrics().horizontalAdvance(text) + 14
+        rect = QRectF(anchor.x() - width / 2, anchor.y() + dy - 11, width, 22)
+        rect.moveLeft(max(4, min(rect.left(), self.width() - width - 4)))
+        rect.moveTop(max(4, rect.top()))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(12, 14, 20, 235))
+        painter.drawRoundedRect(rect, 6, 6)
+        painter.setPen(INK)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)

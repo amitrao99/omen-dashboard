@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs the combined fan and power dashboard from this checkout (src/), using the Python of the installed app.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+python_bin=""
+app_command="$(command -v omen-fan-control || true)"
+if [[ -n "$app_command" ]]; then
+    candidate="$(dirname -- "$(readlink -f -- "$app_command")")/python"
+    [[ -x "$candidate" ]] && python_bin="$candidate"
+fi
+# sudo resets PATH, so also look in the invoking user's pipx venv.
+if [[ -z "$python_bin" && -n "${SUDO_USER:-}" ]]; then
+    user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    candidate="$user_home/.local/share/pipx/venvs/omen-fan-control/bin/python"
+    [[ -x "$candidate" ]] && python_bin="$candidate"
+fi
+if [[ -z "$python_bin" ]] && python3 -c 'import PyQt6, click' 2>/dev/null; then
+    python_bin="$(command -v python3)"
+fi
+if [[ -z "$python_bin" ]]; then
+    echo 'PyQt6 and click were not found. Install omen-fan-control first.' >&2
+    exit 1
+fi
+export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$python_bin" -m omen_fan_control.gui "$@"
