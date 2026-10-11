@@ -165,6 +165,7 @@ These were wrong turns during the investigation. They're recorded so that nobody
 | NVIDIA display modules blocked | `/etc/modprobe.d/nvidia-no-display.conf`, then `sudo update-initramfs -u` |
 | Apps use Intel graphics only | `/etc/environment.d/90-nvidia-hidden.conf` |
 | CoolerControl removed | `apt purge coolercontrol coolercontrold coolercontrol-liqctld`, plus removing its apt repository and key, `/etc/coolercontrol`, and its settings in the home folder |
+| NoteBook FanControl removed | A leftover second fan controller, installed by hand: it started at boot but never controlled the fans (auto-start off, configured for an OMEN 15). Removed with `systemctl disable --now nbfc.service`, plus deleting `/etc/systemd/system/nbfc.service`, `/etc/systemd/system/nbfc-sleep.service`, `/opt/nbfc` and `/etc/NbfcService`. Its Mono runtime (`mono-complete`, about 250 MB) was removed too, with `apt purge` and `apt autoremove`. |
 | Fan service runs this repository's code | `pipx install --force --editable .`; the service restarts at boot |
 | Removed again (did not help) | `/etc/modprobe.d/nvidia-drm-fbdev-off.conf`, `/etc/udev/rules.d/61-mutter-ignore-nvidia.rules` |
 
@@ -194,6 +195,5 @@ echo "scale=1; ($e0 - $e1) * 3600 / 90 / 1000000" | bc   # watts
 
 - **PCI runtime power saving:** turning it on for the 11 devices that have it off saved 3.7 W in the switch-off test. That would bring the laptop to roughly 11 W (an estimate; not yet measured in the final setup).
 - **CPU chip never goes below PC3:** PC6, PC8 and PC10 stay at 0%, and the cause is unknown. The next step is the Intel PMC debug files (`/sys/kernel/debug/pmc_core/`, root only), which show which part blocks deeper states.
-- **Leftover NoteBook FanControl service:** `nbfc` starts at boot, but it isn't controlling the fans (auto-start is off, and it's configured for an OMEN 15). It could be removed.
 - **Dashboard POWER tile:** it switches silently between the whole laptop and the CPU chip, which caused confusion twice during this investigation. It should show both values, each with its own label.
 - **Battery health:** 75.8%, which shortens runtime separately from everything above.
