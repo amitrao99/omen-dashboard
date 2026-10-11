@@ -4,6 +4,33 @@
 # --foreground keeps it attached to the terminal and prints its messages there.
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Ubuntu 26.04's sudo (sudo-rs) has no -E and resets the environment, so as root the window cannot find the desktop.
+# Under sudo, point it back at the invoking user's session: Wayland socket, Xwayland cookie and session bus.
+if [[ -n "${SUDO_UID:-}" && -d "/run/user/$SUDO_UID" ]]; then
+    runtime="/run/user/$SUDO_UID"
+    export XDG_RUNTIME_DIR="$runtime"
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+        socket="$(find "$runtime" -maxdepth 1 -type s -name 'wayland-[0-9]*' -printf '%f\n' 2>/dev/null | sort | head -n 1 || true)"
+        [[ -n "$socket" ]] && export WAYLAND_DISPLAY="$socket"
+    fi
+    if [[ -z "${XAUTHORITY:-}" ]]; then
+        cookie="$(ls -t "$runtime"/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1 || true)"
+        [[ -n "$cookie" ]] && export XAUTHORITY="$cookie"
+    fi
+    if [[ -z "${DISPLAY:-}" ]]; then
+        x_socket="$(find /tmp/.X11-unix -maxdepth 1 -type s -name 'X[0-9]*' -printf '%f\n' 2>/dev/null | sort -V | head -n 1 || true)"
+        [[ -n "$x_socket" ]] && export DISPLAY=":${x_socket#X}"
+    fi
+    if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "$runtime/bus" ]]; then
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus"
+    fi
+fi
+# Prefer Wayland when the session has it, with X11 as the fallback.
+if [[ -n "${WAYLAND_DISPLAY:-}" && -z "${QT_QPA_PLATFORM:-}" ]]; then
+    export QT_QPA_PLATFORM="wayland;xcb"
+fi
+
 python_bin=""
 app_command="$(command -v omen-fan-control || true)"
 if [[ -n "$app_command" ]]; then

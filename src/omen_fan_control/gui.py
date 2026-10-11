@@ -1449,7 +1449,7 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     if os.name == "posix" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         print("Error: no display found (DISPLAY or WAYLAND_DISPLAY).")
-        print("Under sudo, keep the environment with 'sudo -E'.")
+        print("Under sudo, start it with ./omen-dashboard, which finds your desktop session.")
         sys.exit(1)
 
     app = QApplication(sys.argv)

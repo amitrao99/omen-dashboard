@@ -20,13 +20,13 @@ sudo systemctl restart omen-fan-control          # after changing the code or a 
 Then run these from the repository folder:
 
 ```bash
-sudo -E ./omen-dashboard               # starts in the background; the terminal is free to close
-sudo -E ./omen-dashboard --foreground  # stays in this terminal and prints its messages here
+sudo ./omen-dashboard                  # starts in the background; the terminal is free to close
+sudo ./omen-dashboard --foreground     # stays in this terminal and prints its messages here
 ./omen-dashboard                       # no sudo: read-only, so you can view everything but not apply fan changes
 ```
 
 - **Stop it:** click the **X** in the window. If the window is gone, run `sudo pkill -f omen_fan_control.gui`.
-- **Why `sudo -E`:** fan control needs root, and `-E` keeps your display settings so the window can open.
+- **Why `sudo`:** fan control needs root. Ubuntu 26.04's `sudo` (sudo-rs) has no `-E` and clears your desktop settings, so the launcher finds your session itself (Wayland socket, Xwayland cookie, session bus) and opens the window on Wayland.
 - **Log:** background runs write to `/run/user/<your user id>/omen-dashboard.log`. The path is printed when it starts.
 - **Requirement:** the dashboard uses the Python environment of the installed app, so install the app first (see [Installation](#installation)). Without it, python3 needs PyQt6 and click.
 
