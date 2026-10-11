@@ -4,7 +4,18 @@ This tool provides fan control for HP Omen Max, Victus and Omen laptops on Linux
 
 ## Quick start: dashboard and power report
 
-The dashboard shows the fan controls and the live power report in one window. Run these from the repository folder:
+The dashboard shows the fan controls and the live power report in one window.
+
+Install this repository's version of the app first. Its fan service leaves a sleeping NVIDIA GPU alone (see [Battery life with NVIDIA graphics](#battery-life-with-nvidia-graphics)):
+
+```bash
+pipx install --force git+https://github.com/amitrao99/omen-dashboard.git   # from a clone: pipx install --force .
+sudo ln -sf "$HOME/.local/bin/omen-fan-control"* /usr/local/bin/
+sudo omen-fan-control service install                                     # first install only
+sudo systemctl restart omen-fan-control                                   # after an update, so the service runs the new code
+```
+
+Then run these from the repository folder:
 
 ```bash
 sudo -E ./omen-dashboard               # starts in the background; the terminal is free to close
@@ -25,6 +36,33 @@ Power report in the terminal, without a window:
 sudo ./power-report.py       # some readings, such as RAPL, need root
 ./power-report.py --help     # all options
 ```
+
+## Battery life with NVIDIA graphics
+
+On an OMEN 16 (i7-11800H, RTX 3070 Laptop GPU), the laptop drew about 46 W while idle on battery, so a full charge lasted about an hour. The CPU used only 4–5 W of that. Most of the rest was the NVIDIA GPU. Ubuntu's "intel" graphics mode blocks the NVIDIA driver, and without its driver the GPU ran unmanaged, even though Linux reported it as switched off. Loading the driver brought the idle draw down to 22.6 W while the GPU was still awake; by its own reading, it then drew 10–12 W. The steps below also let it switch off fully whenever nothing uses it.
+
+Each step is done once and survives reboots:
+
+1. **Load the NVIDIA driver and keep the screen on Intel graphics:**
+   ```bash
+   sudo prime-select on-demand
+   ```
+2. **Log in with Wayland.** On the login screen, click your name, then the gear icon, and choose **Ubuntu** (not "Ubuntu on Xorg"). With NVIDIA drivers 510 and newer, Ubuntu picks X11 by default, and X11 keeps the GPU awake.
+3. **Stop GNOME from holding the GPU open:**
+   ```bash
+   echo 'SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNEL!="card*-*", DRIVERS=="nvidia", TAG+="mutter-device-ignore"' | sudo tee /etc/udev/rules.d/61-mutter-ignore-nvidia.rules
+   ```
+   Trade-off: while this rule exists, a monitor plugged into a port wired to the NVIDIA GPU shows nothing.
+4. **Turn off the NVIDIA driver's text console**, which otherwise keeps the GPU busy checking its display connectors:
+   ```bash
+   echo "options nvidia-drm fbdev=0" | sudo tee /etc/modprobe.d/nvidia-drm-fbdev-off.conf
+   sudo update-initramfs -u
+   ```
+5. **Avoid tools that read the GPU every second**, such as CoolerControl. Every reading wakes the GPU. This app's fan service and dashboard skip the GPU while it sleeps and use the CPU temperature instead.
+6. **Reboot.**
+
+- **Check it:** `cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status` prints `suspended` while the GPU sleeps. `lspci -D | grep -i nvidia` shows your GPU's address if it differs. If it stays `active`, `sudo lsof /dev/nvidia*` lists the programs holding it.
+- **Undo:** delete the files from steps 3 and 4, run `sudo update-initramfs -u`, and reboot. `sudo prime-select intel` blocks the driver again, which brings back the high idle draw.
 
 ## Context
 

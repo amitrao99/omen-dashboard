@@ -157,6 +157,15 @@ def battery_power(old, new, elapsed):
     return None, "no rate sensor; energy estimate needs >=30s and a counter change"
 
 
+def nvidia_gpu_asleep(devices=Path("/sys/bus/pci/devices")):
+    """True when the NVIDIA driver has powered the GPU down. Any query, nvidia-smi included, would wake it."""
+    for device in devices.glob("*"):
+        if (read(device / "vendor") == "0x10de" and (read(device / "class") or "").startswith("0x03")
+                and (device / "driver").resolve().name == "nvidia"):
+            return read(device / "power" / "runtime_status") == "suspended"
+    return False
+
+
 def gpu_samples(skip):
     """Query nvidia-smi once. Each entry has label/value/detail text plus numbers for the GUI."""
 
@@ -166,6 +175,10 @@ def gpu_samples(skip):
 
     if skip:
         return failed("not queried", "--no-gpu selected")
+    if nvidia_gpu_asleep():
+        asleep = failed("asleep", "powered down by its driver; not queried, so it stays off")
+        asleep[0]["asleep"] = True
+        return asleep
     command = shutil.which("nvidia-smi")
     if not command:
         return failed("unavailable", "nvidia-smi is not installed")

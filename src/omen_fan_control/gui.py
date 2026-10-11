@@ -139,7 +139,8 @@ class PowerSampler(QThread):
     def _poll_gpu(self):
         while True:
             self._gpu = power_report.gpu_samples(False)
-            idle = all(s["temp"] is None and s["power"] is None for s in self._gpu)
+            # A sleeping GPU is checked through sysfs without waking it, so it is watched at the normal rate.
+            idle = all(s["temp"] is None and s["power"] is None and not s.get("asleep") for s in self._gpu)
             if self._stopping.wait(GPU_IDLE_INTERVAL if idle else GPU_INTERVAL):
                 return
 

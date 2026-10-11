@@ -19,6 +19,7 @@ from ._constants import (
 )
 from ._driver import DriverInstallerMixin
 from ._service import ServiceManagerMixin
+from .power_report import nvidia_gpu_asleep
 
 
 class FanController(
@@ -187,10 +188,13 @@ class FanController(
     def has_gpu(self) -> bool:
         if hasattr(self, "_has_gpu_cache"):
             return self._has_gpu_cache
-        self._has_gpu_cache = self.get_gpu_temp() > 0
+        self._has_gpu_cache = nvidia_gpu_asleep() or self.get_gpu_temp() > 0
         return self._has_gpu_cache
 
     def get_gpu_temp(self) -> int:
+        # A sleeping GPU makes no heat, and nvidia-smi would wake it. 0 makes the fan logic fall back to the CPU.
+        if nvidia_gpu_asleep():
+            return 0
         try:
             res = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
                                  capture_output=True, text=True)
