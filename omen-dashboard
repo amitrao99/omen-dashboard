@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Runs the combined fan and power dashboard from this checkout (src/), using the Python of the installed app.
+# By default it starts detached from the terminal, so the terminal can be closed. Close the window to stop it.
+# --foreground keeps it attached to the terminal and prints its messages there.
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 python_bin=""
@@ -22,4 +24,28 @@ if [[ -z "$python_bin" ]]; then
     exit 1
 fi
 export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
-exec "$python_bin" -m omen_fan_control.gui "$@"
+foreground=0
+app_args=()
+for arg in "$@"; do
+    case "$arg" in
+        --foreground) foreground=1 ;;
+        --background) ;; # The default. Still accepted so existing commands keep working.
+        *) app_args+=("$arg") ;;
+    esac
+done
+
+if [[ "$foreground" -eq 1 ]]; then
+    exec "$python_bin" -m omen_fan_control.gui "${app_args[@]}"
+fi
+
+# setsid gives the app its own session, so closing the terminal does not reach it.
+log="${XDG_RUNTIME_DIR:-/tmp}/omen-dashboard.log"
+setsid -f "$python_bin" -m omen_fan_control.gui "${app_args[@]}" </dev/null >"$log" 2>&1
+sleep 1
+if pgrep -f -- "-m omen_fan_control.gui" >/dev/null; then
+    echo "Omen Control is running in the background. Close its window (X) to stop it. Log: $log"
+else
+    echo "Omen Control stopped right after starting. Last lines of $log:" >&2
+    tail -n 5 "$log" >&2
+    exit 1
+fi

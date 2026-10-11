@@ -2,6 +2,30 @@
 
 This tool provides fan control for HP Omen Max, Victus and Omen laptops on Linux. It includes installer for a kernel driver patch (`hp-wmi`) to expose PWM controls and a userspace utility to manage fan curves, create watchdog that sets the fan configuration periodically and a simple stress test tool to see the fan curve in effect. It also allows periodically reversing the fan spin direction on supported boards to expel dust.
 
+## Quick start: dashboard and power report
+
+The dashboard shows the fan controls and the live power report in one window. Run these from the repository folder:
+
+```bash
+sudo -E ./omen-dashboard               # starts in the background; the terminal is free to close
+sudo -E ./omen-dashboard --foreground  # stays in this terminal and prints its messages here
+./omen-dashboard                       # no sudo: read-only, so you can view everything but not apply fan changes
+```
+
+- **Stop it:** click the **X** in the window. If the window is gone, run `sudo pkill -f omen_fan_control.gui`.
+- **Why `sudo -E`:** fan control needs root, and `-E` keeps your display settings so the window can open.
+- **Log:** background runs write to `/run/user/<your user id>/omen-dashboard.log`. The path is printed when it starts.
+- **Requirement:** the dashboard uses the Python environment of the installed app, so install the app first (see [Installation](#installation)). Without it, python3 needs PyQt6 and click.
+
+Power report in the terminal, without a window:
+
+```bash
+./power-report.py            # one report
+./power-report.py --watch    # keeps refreshing until Ctrl+C
+sudo ./power-report.py       # some readings, such as RAPL, need root
+./power-report.py --help     # all options
+```
+
 ## Context
 
 This tool includes a backported `hp-wmi` driver patch from the latest Linux kernel, which introduces native fan control support for many devices from the following models:

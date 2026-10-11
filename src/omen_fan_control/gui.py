@@ -15,12 +15,14 @@ from collections import deque
 from string import Template
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QPointF, QRectF, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QCursor, QFont, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+)
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSlider, QStackedWidget, QTabWidget,
-    QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractButton, QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSlider, QSplitter,
+    QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import get_assets_dir
@@ -32,6 +34,7 @@ POWER_INTERVAL = 2.0  # seconds between power and activity samples
 GPU_INTERVAL = 10.0  # nvidia-smi can wake a sleeping dGPU, so it is polled slowly
 GPU_IDLE_INTERVAL = 60.0  # back off further while the GPU does not answer
 TOP_PROCESSES = 8
+RESIZE_BORDER = 6  # px along each window edge that starts a resize; the frameless window has no system border
 STRESS_DURATIONS = {"30s": 30, "1m": 60, "5m": 300, "30m": 1800, "Indefinite": -1}
 MODE_LABELS = {"auto": "Auto", "max": "Max", "manual": "Manual", "curve": "Curve"}
 MODE_NOTES = {"auto": "The firmware controls both fans.", "max": "Both fans run at full speed."}
@@ -91,6 +94,8 @@ QToolTip { background: $card; color: $text; border: 1px solid $edge; padding: 4p
 QScrollBar:vertical { background: transparent; width: 10px; }
 QScrollBar::handle:vertical { background: $edge; border-radius: 5px; min-height: 30px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QSplitter::handle { background: transparent; }
+QSplitter::handle:hover { background: $edge; }
 """).substitute(PALETTE)
 
 
@@ -257,7 +262,11 @@ class Sparkline(QWidget):
         super().__init__()
         self._color = QColor(color)
         self._values = deque(maxlen=samples)
-        self.setFixedHeight(34)
+        self.setMinimumHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+    def sizeHint(self):
+        return QSize(160, 72)
 
     def push(self, value):
         if value is not None:
@@ -383,8 +392,8 @@ class Tile(QFrame):
         layout.addWidget(title)
         layout.addWidget(self.value)
         layout.addWidget(self.note)
-        layout.addStretch()
-        layout.addWidget(self.spark)
+        layout.addSpacing(4)
+        layout.addWidget(self.spark, 1)
 
     def set_values(self, value: str, note: str, series=None):
         self.value.setText(value)
@@ -398,8 +407,8 @@ class ReadingsTree(QTreeWidget):
     def __init__(self):
         super().__init__()
         self.setHeaderLabels(["Measurement", "Value", "Details"])
-        self.setColumnWidth(0, 260)
-        self.setColumnWidth(1, 150)
+        self.setColumnWidth(0, 240)
+        self.setColumnWidth(1, 120)
         self.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.setUniformRowHeights(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -466,12 +475,75 @@ class ProcessTable(QTableWidget):
                     item.setText(text)
 
 
+class TitleBar(QFrame):
+    """The header is also the title bar: drag it to move the window, double-click it to maximize or restore."""
+
+    def mousePressEvent(self, event):
+        handle = self.window().windowHandle()
+        if event.button() == Qt.MouseButton.LeftButton and handle is not None:
+            handle.startSystemMove()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.window().toggle_maximized()
+
+
+class WindowButton(QAbstractButton):
+    """Minimize, maximize or restore, and close. Painted here because the window has no system title bar."""
+
+    def __init__(self, kind: str):
+        super().__init__()
+        self.kind = kind
+        self.restore = False
+        self.setToolTip({"minimize": "Minimize", "maximize": "Maximize", "close": "Close"}[kind])
+        self.setFixedWidth(46)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        hot = self.underMouse() or self.isDown()
+        close = self.kind == "close"
+        if hot:
+            painter.fillRect(self.rect(), QColor(PALETTE["red"] if close else PALETTE["edge"]))
+        ink = QColor("#ffffff") if hot and close else QColor(PALETTE["text"] if hot else PALETTE["muted"])
+        painter.setPen(QPen(ink, 1.2))
+        cx, cy = self.width() / 2, self.height() / 2
+        if close:
+            painter.drawLine(QPointF(cx - 5, cy - 5), QPointF(cx + 5, cy + 5))
+            painter.drawLine(QPointF(cx - 5, cy + 5), QPointF(cx + 5, cy - 5))
+        elif self.kind == "minimize":
+            painter.drawLine(QPointF(cx - 5, cy), QPointF(cx + 5, cy))
+        elif self.restore:
+            # Two overlapping squares: the back one is hidden under the front one where they meet.
+            painter.drawRect(QRectF(cx - 3, cy - 6, 8, 8))
+            front = QRectF(cx - 5, cy - 2, 8, 8)
+            painter.fillRect(front, QColor(PALETTE["edge"] if hot else PALETTE["card"]))
+            painter.drawRect(front)
+        else:
+            painter.drawRect(QRectF(cx - 5, cy - 5, 10, 10))
+        painter.end()
+
+
 class Dashboard(QMainWindow):
     def __init__(self, controller: FanController | None = None):
         super().__init__()
         self.setWindowTitle("Omen Control")
-        self.resize(1180, 800)
-        self.setMinimumSize(1040, 700)
+        # No system frame: the header is the title bar, and the window draws its own buttons and resize edges.
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.resize(1240, 820)
+        self.setMinimumSize(1100, 720)
+        self._resize_shape = None
+        QApplication.instance().installEventFilter(self)
         self.ctl = controller or FanController()
         self.is_root = os.geteuid() == 0
         self.has_gpu = self.ctl.has_gpu()
@@ -535,11 +607,16 @@ class Dashboard(QMainWindow):
         self.banner.setWordWrap(True)
         self.banner.hide()
         body.addWidget(self.banner)
-        columns = QHBoxLayout()
-        columns.setSpacing(16)
-        columns.addWidget(self._build_fan_card())
-        columns.addLayout(self._build_right_column(), 1)
-        body.addLayout(columns, 1)
+        # The divider between the panes can be dragged; the fan card is the one the user adjusts most.
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(16)
+        self.splitter.addWidget(self._build_fan_card())
+        self.splitter.addWidget(self._build_right_column())
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([520, 640])
+        body.addWidget(self.splitter, 1)
         outer.addLayout(body, 1)
 
         self.sample_label = QLabel("Collecting first sample…")
@@ -553,10 +630,11 @@ class Dashboard(QMainWindow):
         self.statusBar().addPermanentWidget(self.clock)
 
     def _build_header(self):
-        header = QFrame()
+        header = TitleBar()
         header.setObjectName("Header")
+        header.setFixedHeight(64)
         row = QHBoxLayout(header)
-        row.setContentsMargins(20, 12, 20, 12)
+        row.setContentsMargins(20, 0, 0, 0)  # No right margin: the window buttons sit flush with the edge.
         row.setSpacing(10)
 
         logo = QLabel()
@@ -606,12 +684,21 @@ class Dashboard(QMainWindow):
         self.header_temp.setMinimumWidth(96)
         self.header_temp.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.header_temp)
+        row.addSpacing(14)
+        self.min_btn = WindowButton("minimize")
+        self.max_btn = WindowButton("maximize")
+        self.close_btn = WindowButton("close")
+        self.min_btn.clicked.connect(self.showMinimized)
+        self.max_btn.clicked.connect(self.toggle_maximized)
+        self.close_btn.clicked.connect(self.close)
+        for button in (self.min_btn, self.max_btn, self.close_btn):
+            row.addWidget(button)
         return header
 
     def _build_fan_card(self):
         card = QFrame()
         card.setObjectName("Card")
-        card.setFixedWidth(410)
+        card.setMinimumWidth(440)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(12)
@@ -654,11 +741,11 @@ class Dashboard(QMainWindow):
         layout.addWidget(seg)
 
         self.pages = QStackedWidget()
-        self.pages.setFixedHeight(236)
+        self.pages.setMinimumHeight(200)
         self.pages.addWidget(self._page_firmware())
         self.pages.addWidget(self._page_manual())
         self.pages.addWidget(self._page_curve())
-        layout.addWidget(self.pages)
+        layout.addWidget(self.pages, 1)
 
         self.apply_btn = QPushButton("Applied")
         self.apply_btn.setObjectName("Primary")
@@ -758,16 +845,20 @@ class Dashboard(QMainWindow):
         return page
 
     def _build_right_column(self):
-        column = QVBoxLayout()
+        panel = QWidget()
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(14)
-        tiles = QHBoxLayout()
+        tiles = QGridLayout()
         tiles.setSpacing(12)
         self.tile_temp = Tile("CPU TEMPERATURE", PALETTE["red"])
         self.tile_power = Tile("POWER", PALETTE["amber"])
         self.tile_busy = Tile("CPU LOAD", PALETTE["green"])
         self.tile_ram = Tile("MEMORY", PALETTE["violet"])
-        for tile in (self.tile_temp, self.tile_power, self.tile_busy, self.tile_ram):
-            tiles.addWidget(tile)
+        for index, tile in enumerate((self.tile_temp, self.tile_power, self.tile_busy, self.tile_ram)):
+            tiles.addWidget(tile, index // 2, index % 2)
+        tiles.setColumnStretch(0, 1)
+        tiles.setColumnStretch(1, 1)
         column.addLayout(tiles)
 
         self.power_tree = ReadingsTree()
@@ -783,7 +874,7 @@ class Dashboard(QMainWindow):
         self.notes.setObjectName("Faint")
         self.notes.setWordWrap(True)
         column.addWidget(self.notes)
-        return column
+        return panel
 
     # ----- state -----
 
@@ -1003,6 +1094,76 @@ class Dashboard(QMainWindow):
         self.notes.setText("\n".join(report["notes"]))
         self.sample_label.setText(f"Power sample {report['elapsed']:.1f} s · {report['timestamp'][11:]}")
 
+    # ----- window -----
+
+    def toggle_maximized(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self.max_btn.restore = self.isMaximized()
+            self.max_btn.setToolTip("Restore" if self.isMaximized() else "Maximize")
+            self.max_btn.update()
+
+    def eventFilter(self, obj, event):
+        # The frameless window has no system border, so resizing from its edges is handled here for every widget.
+        kind = event.type()
+        if kind == QEvent.Type.Leave and obj is self:
+            self._set_resize_cursor(Qt.Edge(0))
+        elif kind in (QEvent.Type.MouseMove, QEvent.Type.MouseButtonPress) and isinstance(obj, QWidget) \
+                and obj.window() is self:
+            edges = self._resize_edges(event.globalPosition().toPoint())
+            if kind == QEvent.Type.MouseMove:
+                self._set_resize_cursor(edges)
+            elif edges and event.button() == Qt.MouseButton.LeftButton and self.windowHandle() is not None:
+                self.windowHandle().startSystemResize(edges)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _resize_edges(self, global_pos) -> Qt.Edge:
+        edges = Qt.Edge(0)
+        if self.isMaximized():
+            return edges
+        local = self.mapFromGlobal(global_pos)
+        x, y = local.x(), local.y()
+        if not (0 <= x < self.width() and 0 <= y < self.height()):
+            return edges
+        if x < RESIZE_BORDER:
+            edges |= Qt.Edge.LeftEdge
+        elif x >= self.width() - RESIZE_BORDER:
+            edges |= Qt.Edge.RightEdge
+        if y < RESIZE_BORDER:
+            edges |= Qt.Edge.TopEdge
+        elif y >= self.height() - RESIZE_BORDER:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    def _set_resize_cursor(self, edges: Qt.Edge):
+        horizontal = bool(edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge))
+        vertical = bool(edges & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge))
+        shape = None
+        if horizontal and vertical:
+            # Top-left and bottom-right corners share one diagonal, top-right and bottom-left the other.
+            same_corner = bool(edges & Qt.Edge.LeftEdge) == bool(edges & Qt.Edge.TopEdge)
+            shape = Qt.CursorShape.SizeFDiagCursor if same_corner else Qt.CursorShape.SizeBDiagCursor
+        elif horizontal:
+            shape = Qt.CursorShape.SizeHorCursor
+        elif vertical:
+            shape = Qt.CursorShape.SizeVerCursor
+        if shape == self._resize_shape:
+            return
+        if self._resize_shape is None:
+            QApplication.setOverrideCursor(QCursor(shape))
+        elif shape is None:
+            QApplication.restoreOverrideCursor()
+        else:
+            QApplication.changeOverrideCursor(QCursor(shape))
+        self._resize_shape = shape
+
     # ----- actions -----
 
     def apply_selected(self):
@@ -1120,6 +1281,8 @@ class Dashboard(QMainWindow):
         for timer in (self.tick_timer, self.slow_timer, self.watchdog_timer, self.stress_timer):
             timer.stop()
         self.sampler.stop()
+        self._set_resize_cursor(Qt.Edge(0))
+        QApplication.instance().removeEventFilter(self)
         super().closeEvent(event)
 
 
