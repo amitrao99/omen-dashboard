@@ -6,14 +6,16 @@ This tool provides fan control for HP Omen Max, Victus and Omen laptops on Linux
 
 The dashboard shows the fan controls and the live power report in one window.
 
-Install this repository's version of the app first. Its fan service leaves a sleeping NVIDIA GPU alone (see [Battery life with NVIDIA graphics](#battery-life-with-nvidia-graphics)):
+Install this repository's version of the app first. Its fan service leaves a sleeping NVIDIA GPU alone (see [Battery life with NVIDIA graphics](#battery-life-with-nvidia-graphics)). From the cloned folder:
 
 ```bash
-pipx install --force git+https://github.com/amitrao99/omen-dashboard.git   # from a clone: pipx install --force .
+pipx install --force --editable .                 # the commands and the fan service run the code in this folder
 sudo ln -sf "$HOME/.local/bin/omen-fan-control"* /usr/local/bin/
-sudo omen-fan-control service install                                     # first install only
-sudo systemctl restart omen-fan-control                                   # after an update, so the service runs the new code
+sudo omen-fan-control service install            # first install only
+sudo systemctl restart omen-fan-control          # after changing the code or a git pull, so the service loads it
 ```
+
+`--editable` links the app to this folder instead of copying it, so `omen-fan-control`, `omen-fan-control-gui` and the fan service all use the code here. Keep the folder where it is: moving or deleting it breaks the commands until you reinstall.
 
 Then run these from the repository folder:
 
