@@ -33,12 +33,14 @@ Investigated on 11 October 2026. The laptop drew 46 W while idle on battery, so 
 
 ## Why the dashboard showed 50 W and 5 W
 
-The POWER tile shows one of two different measurements:
+Before this was fixed, the POWER tile showed one of two different measurements:
 
-- **Battery draw:** the whole laptop. It only appears on battery, and after 30 s, because the estimate needs at least 30 s of data.
-- **CPU package (RAPL):** the CPU chip only. It's shown at all other times: in the first 30 s, and whenever the charger is connected.
+- **Battery draw:** the whole laptop. It only appeared on battery, and after 30 s, because the estimate needs at least 30 s of data.
+- **CPU package (RAPL):** the CPU chip only. It was shown at all other times: in the first 30 s, and whenever the charger was connected.
 
-So the tile showed about 5 W for the first 30 s and then jumped to about 50 W. On the charger it showed about 5 W again. Nothing in the power draw jumped; the tile switched between these two readings. The label under the number says which one is showing.
+So the tile showed about 5 W for the first 30 s and then jumped to about 50 W. On the charger it showed about 5 W again. Nothing in the power draw jumped; the tile switched between these two readings. Only the small label under the number said which one was showing.
+
+**Fixed:** the tile is now called **LAPTOP POWER**. Its big number and its graph only ever show the whole laptop. The CPU chip appears in the line underneath, for example "Whole laptop · CPU chip 3.1 W". When the whole-laptop figure isn't available, the big number shows "—" and the line explains why: "Measuring (30 s)" or "On charger".
 
 ## Investigation
 
@@ -195,5 +197,4 @@ echo "scale=1; ($e0 - $e1) * 3600 / 90 / 1000000" | bc   # watts
 
 - **PCI runtime power saving:** turning it on for the 11 devices that have it off saved 3.7 W in the switch-off test. That would bring the laptop to roughly 11 W (an estimate; not yet measured in the final setup).
 - **CPU chip never goes below PC3:** PC6, PC8 and PC10 stay at 0%, and the cause is unknown. The next step is the Intel PMC debug files (`/sys/kernel/debug/pmc_core/`, root only), which show which part blocks deeper states.
-- **Dashboard POWER tile:** it switches silently between the whole laptop and the CPU chip, which caused confusion twice during this investigation. It should show both values, each with its own label.
 - **Battery health:** 75.8%, which shortens runtime separately from everything above.

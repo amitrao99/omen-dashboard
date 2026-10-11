@@ -678,7 +678,7 @@ class Dashboard(QMainWindow):
             self.sensor_group.addButton(button)
             bar_row.addWidget(button)
             button.clicked.connect(lambda _checked, s=sensor: self._set_reference(s))
-        row.addWidget(self.sensor_bar)
+        row.addWidget(self.sensor_bar, 0, Qt.AlignmentFlag.AlignVCenter)  # its own height, not the header's 64 px
 
         self.header_temp = QLabel("— °C")
         self.header_temp.setObjectName("Big")
@@ -853,7 +853,9 @@ class Dashboard(QMainWindow):
         tiles = QGridLayout()
         tiles.setSpacing(12)
         self.tile_temp = Tile("CPU TEMPERATURE", PALETTE["red"])
-        self.tile_power = Tile("POWER", PALETTE["amber"])
+        self.tile_power = Tile("LAPTOP POWER", PALETTE["amber"])
+        self.tile_power.setToolTip("Whole-laptop draw, from the battery's energy counter: shown on battery, after about 30 s.\n"
+                                   "The CPU chip reading below it is part of that draw, not extra.")
         self.tile_busy = Tile("CPU LOAD", PALETTE["green"])
         self.tile_ram = Tile("MEMORY", PALETTE["violet"])
         for index, tile in enumerate((self.tile_temp, self.tile_power, self.tile_busy, self.tile_ram)):
@@ -1068,13 +1070,23 @@ class Dashboard(QMainWindow):
             self.has_gpu = True
             self._sync_sensor_buttons()
 
+        # The big number and the graph are only ever the whole laptop. The CPU chip is part of that draw, so it sits in
+        # the note; putting it in the big number while the laptop figure was missing made the reading look like it jumped.
         draw, package = metrics.get("battery_draw_w"), metrics.get("cpu_package_w")
-        if draw is not None:
-            self.tile_power.set_values(f"{draw:.1f} W", "Battery draw", draw)
-        elif package is not None:
-            self.tile_power.set_values(f"{package:.1f} W", "CPU package (RAPL)", package)
+        if package is not None:
+            cpu = f"CPU chip {package:.1f} W"
         else:
-            self.tile_power.set_values("—", "needs sudo" if not self.is_root else "no sensor", None)
+            cpu = "CPU chip needs sudo" if not self.is_root else "CPU chip: no sensor"
+        if draw is not None:
+            self.tile_power.set_values(f"{draw:.1f} W", f"Whole laptop · {cpu}", draw)
+        else:
+            if metrics.get("external_power"):
+                status = "On charger"
+            elif metrics.get("battery_pct") is None:
+                status = "No battery"
+            else:
+                status = "Measuring (30 s)"
+            self.tile_power.set_values("—", f"{status} · {cpu}", None)
 
         busy = metrics.get("cpu_busy")
         self.tile_busy.set_values(f"{busy:.0f}%" if busy is not None else "—",
