@@ -151,6 +151,8 @@ The GPU was found awake again a day after the fix, at about 9.5 W.
 
 The environment file (#6) can't prevent this kind of blocker. It only changes which graphics libraries desktop apps load. A system service that opens `/dev/nvidia*` directly is not affected by it.
 
+The same upgrade also broke #6. Mesa in 26.04 renamed the Intel Vulkan manifest from `intel_icd.x86_64.json` to `intel_icd.json`, so `VK_DRIVER_FILES` named a file that no longer existed and Vulkan apps found no driver at all. The GPU stayed asleep, but Vulkan didn't work. `system/90-nvidia-hidden.conf` now names `intel_icd.json`.
+
 ## Preventing a repeat
 
 Each fix can be undone by something outside this repository. Driver-series changes are the main risk, because they install packages under new names. Those packages enable their services again and can add new daemons.
@@ -160,7 +162,7 @@ Each fix can be undone by something outside this repository. Driver-series chang
 | `nvidia-powerd` off | A new driver series ships it in a new package (`nvidia-kernel-common-<series>`), which enables it on install. `disable` doesn't survive that. | **Mask it**: `sudo systemctl mask --now nvidia-powerd`. Masking links the unit name to `/dev/null` in `/etc`, so no package of any series can start it until it's unmasked. |
 | `on-demand` mode | Running `prime-select intel`, or a graphics settings tool that runs it | `prime-select query` |
 | Display modules blocked | The file lives in `/etc/modprobe.d`, which upgrades leave alone. A new driver could add a display module with a different name. | `lsmod \| grep -E "^nvidia_(drm\|modeset)"` prints nothing |
-| Apps on Intel graphics | The file lives in `/etc/environment.d`. A Mesa or Vulkan upgrade that renames `50_mesa.json` or `intel_icd.x86_64.json` would leave apps with no driver. Apps then fail to start; they don't wake the GPU. | Both files named in `system/90-nvidia-hidden.conf` exist |
+| Apps on Intel graphics | The file lives in `/etc/environment.d`. A Mesa or Vulkan upgrade that renames `50_mesa.json` or `intel_icd.x86_64.json` would leave apps with no driver. Apps then fail to start; they don't wake the GPU. The 26.04 upgrade did rename the Vulkan file. | Both files named in `system/90-nvidia-hidden.conf` exist |
 | Wayland session | GDM's `61-gdm.rules` may prefer Xorg again after a GDM upgrade | `echo "$XDG_SESSION_TYPE"` prints `wayland` |
 | No GPU-polling tools | Installing a new monitor (CoolerControl, `nvtop`, a GNOME extension) that reads the GPU every second | `sudo lsof /dev/nvidia*` prints nothing |
 
@@ -197,7 +199,7 @@ These were wrong turns during the investigation. They're recorded so that nobody
 | NVIDIA driver allowed to load | `sudo prime-select on-demand` |
 | Wayland session | "Ubuntu" chosen under the gear icon on the login screen; GNOME remembers it |
 | NVIDIA display modules blocked | `/etc/modprobe.d/nvidia-no-display.conf`, then `sudo update-initramfs -u` |
-| Apps use Intel graphics only | `/etc/environment.d/90-nvidia-hidden.conf` |
+| Apps use Intel graphics only | `/etc/environment.d/90-nvidia-hidden.conf`; recopied on 12 October 2026 for the renamed Vulkan file |
 | CoolerControl removed | `apt purge coolercontrol coolercontrold coolercontrol-liqctld`, plus removing its apt repository and key, `/etc/coolercontrol`, and its settings in the home folder |
 | NoteBook FanControl removed | A leftover second fan controller, installed by hand: it started at boot but never controlled the fans (auto-start off, configured for an OMEN 15). Removed with `systemctl disable --now nbfc.service`, plus deleting `/etc/systemd/system/nbfc.service`, `/etc/systemd/system/nbfc-sleep.service`, `/opt/nbfc` and `/etc/NbfcService`. Its Mono runtime (`mono-complete`, about 250 MB) was removed too, with `apt purge` and `apt autoremove`. |
 | Dynamic Boost daemon masked | `sudo systemctl mask --now nvidia-powerd` (12 October 2026, Ubuntu 26.04, driver 580) |
