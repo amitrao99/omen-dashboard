@@ -2,13 +2,15 @@
 
 Investigated on 11 October 2026. The laptop drew 46 W while idle on battery, so a full charge lasted about an hour. About 34 W of that was the NVIDIA GPU running without a driver. With the GPU properly powered off, idle draw is now **14.5 W**.
 
+On 12 October 2026, after the upgrade to Ubuntu 26.04, the GPU stopped sleeping again. This time the cause was NVIDIA's Dynamic Boost daemon. See [Regression: nvidia-powerd](#regression-nvidia-powerd-12-october-2026) and [Preventing a repeat](#preventing-a-repeat).
+
 ## Summary
 
 | | |
 |---|---|
 | **Symptom** | Idle draw of about 46 W on battery, and about 1 hour of battery life. The dashboard showed about 50 W "Battery draw" next to about 5 W "CPU package-0". |
 | **Root cause** | The graphics mode was set to "intel" (`prime-select intel`), which blocks the NVIDIA driver. Without its driver, the RTX 3070 was never actually powered down, even though Linux and the firmware both reported it as off. It drew about 34 W. |
-| **Fix** | Load the NVIDIA driver so it can power the GPU off, then stop everything that kept the GPU awake: the X11 session, GNOME Shell, CoolerControl, the NVIDIA display modules, this app's own fan service, and Xwayland and browsers through the graphics libraries. |
+| **Fix** | Load the NVIDIA driver so it can power the GPU off, then stop everything that kept the GPU awake: the X11 session, GNOME Shell, CoolerControl, the NVIDIA display modules, this app's own fan service, and Xwayland and browsers through the graphics libraries. After the Ubuntu 26.04 upgrade, also NVIDIA's Dynamic Boost daemon (`nvidia-powerd`). |
 | **Result** | 46.1 W → 22.6 W (driver loaded, GPU awake) → **14.5 W** (GPU off). Idle battery life went from about 1.4 h to about 4.3 h, on a 63 Wh battery. |
 | **Cost** | The NVIDIA GPU can no longer be used for graphics, and a monitor on a port wired to it shows nothing. The changes are undone by deleting two files (see [Undo](#undo)). |
 
@@ -134,6 +136,36 @@ After the reboot with all the fixes in place:
 
 The middle rows were measured in "intel" mode, before the fixes, so they are approximate for the final setup.
 
+## Regression: nvidia-powerd (12 October 2026)
+
+The GPU was found awake again a day after the fix, at about 9.5 W.
+
+| | |
+|---|---|
+| **Symptom** | The GPU sat in D0, P8 at about 9.5 W. Since boot it had been awake about 58 minutes and suspended for 175 ms in total, so it was never sleeping rather than waking now and then. Every earlier fix was still in place: `on-demand` mode, display modules not loaded, the EGL and Vulkan settings present in GNOME Shell's environment, Wayland session. |
+| **Root cause** | `nvidia-powerd`, NVIDIA's Dynamic Boost daemon, held `/dev/nvidiactl` and `/dev/nvidia0` (11 handles) for as long as it ran. While anything holds the device, the driver can't power the GPU off. It also logged `DC power limits table is not supported` and `NvPcfApi is not initialized`, so it wasn't doing anything useful on this laptop. |
+| **How it came back** | On 11 October at 22:03 the driver moved from series 575 to 580, then Ubuntu was upgraded from 24.04 to 26.04 (22:23–22:51). The daemon ships in `nvidia-kernel-common-580`, a newly installed package, and installing a package enables its services. Whether the daemon ran during the [final measurement](#7-final-measurement) on driver 575 isn't recorded. |
+| **How it was found** | `runtime_status` stuck at `active`, with no `nvidia-smi` used to check (it would have woken the GPU). Then `sudo lsof /dev/nvidia*` listed only `nvidia-powerd`. |
+| **Fix** | `sudo systemctl mask --now nvidia-powerd`. The GPU reached D3cold within seconds and its awake-time counter stopped. It was first only disabled, which a future driver series would undo. See [Preventing a repeat](#preventing-a-repeat). |
+| **Cost** | No Dynamic Boost, which moves power from the CPU to the GPU under load. It does nothing while the GPU is unused. |
+
+The environment file (#6) can't prevent this kind of blocker. It only changes which graphics libraries desktop apps load. A system service that opens `/dev/nvidia*` directly is not affected by it.
+
+## Preventing a repeat
+
+Each fix can be undone by something outside this repository. Driver-series changes are the main risk, because they install packages under new names. Those packages enable their services again and can add new daemons.
+
+| Fix | What can undo it | Protection |
+|---|---|---|
+| `nvidia-powerd` off | A new driver series ships it in a new package (`nvidia-kernel-common-<series>`), which enables it on install. `disable` doesn't survive that. | **Mask it**: `sudo systemctl mask --now nvidia-powerd`. Masking links the unit name to `/dev/null` in `/etc`, so no package of any series can start it until it's unmasked. |
+| `on-demand` mode | Running `prime-select intel`, or a graphics settings tool that runs it | `prime-select query` |
+| Display modules blocked | The file lives in `/etc/modprobe.d`, which upgrades leave alone. A new driver could add a display module with a different name. | `lsmod \| grep -E "^nvidia_(drm\|modeset)"` prints nothing |
+| Apps on Intel graphics | The file lives in `/etc/environment.d`. A Mesa or Vulkan upgrade that renames `50_mesa.json` or `intel_icd.x86_64.json` would leave apps with no driver. Apps then fail to start; they don't wake the GPU. | Both files named in `system/90-nvidia-hidden.conf` exist |
+| Wayland session | GDM's `61-gdm.rules` may prefer Xorg again after a GDM upgrade | `echo "$XDG_SESSION_TYPE"` prints `wayland` |
+| No GPU-polling tools | Installing a new monitor (CoolerControl, `nvtop`, a GNOME extension) that reads the GPU every second | `sudo lsof /dev/nvidia*` prints nothing |
+
+**After every driver update or Ubuntu upgrade**, run the [Verification](#verification) block. If `runtime_status` says `active` for more than a few seconds, `sudo lsof /dev/nvidia*` names the culprit. Don't check with `nvidia-smi`: it wakes the GPU, so it can't show whether the GPU sleeps.
+
 ## False leads and corrections
 
 These were wrong turns during the investigation. They're recorded so that nobody repeats them.
@@ -168,6 +200,7 @@ These were wrong turns during the investigation. They're recorded so that nobody
 | Apps use Intel graphics only | `/etc/environment.d/90-nvidia-hidden.conf` |
 | CoolerControl removed | `apt purge coolercontrol coolercontrold coolercontrol-liqctld`, plus removing its apt repository and key, `/etc/coolercontrol`, and its settings in the home folder |
 | NoteBook FanControl removed | A leftover second fan controller, installed by hand: it started at boot but never controlled the fans (auto-start off, configured for an OMEN 15). Removed with `systemctl disable --now nbfc.service`, plus deleting `/etc/systemd/system/nbfc.service`, `/etc/systemd/system/nbfc-sleep.service`, `/opt/nbfc` and `/etc/NbfcService`. Its Mono runtime (`mono-complete`, about 250 MB) was removed too, with `apt purge` and `apt autoremove`. |
+| Dynamic Boost daemon masked | `sudo systemctl mask --now nvidia-powerd` (12 October 2026, Ubuntu 26.04, driver 580) |
 | Fan service runs this repository's code | `pipx install --force --editable .`; the service restarts at boot |
 | Removed again (did not help) | `/etc/modprobe.d/nvidia-drm-fbdev-off.conf`, `/etc/udev/rules.d/61-mutter-ignore-nvidia.rules` |
 
@@ -178,6 +211,7 @@ cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status   # "suspended" while
 lsmod | grep -E "^nvidia_(drm|modeset)"                       # prints nothing
 prime-select query                                            # on-demand
 echo "$XDG_SESSION_TYPE"                                      # wayland
+systemctl is-enabled nvidia-powerd                            # masked
 sudo lsof /dev/nvidia*                                        # lists whatever holds the GPU, if it stays awake
 ```
 
@@ -191,10 +225,12 @@ echo "scale=1; ($e0 - $e1) * 3600 / 90 / 1000000" | bc   # watts
 ## Undo
 
 - **Let apps use the NVIDIA GPU again:** run `sudo rm /etc/modprobe.d/nvidia-no-display.conf /etc/environment.d/90-nvidia-hidden.conf`, then `sudo update-initramfs -u`, and reboot. The GPU then stays awake, as in the 22.6 W row.
+- **Bring back Dynamic Boost:** `sudo systemctl unmask nvidia-powerd`, then `sudo systemctl enable --now nvidia-powerd`. The GPU then stays awake at about 9.5 W.
 - **Go back to "intel" mode:** `sudo prime-select intel`. This brings back the 46 W drain, because the GPU runs without a driver again.
 
 ## Open items
 
 - **PCI runtime power saving:** turning it on for the 11 devices that have it off saved 3.7 W in the switch-off test. That would bring the laptop to roughly 11 W (an estimate; not yet measured in the final setup).
 - **CPU chip never goes below PC3:** PC6, PC8 and PC10 stay at 0%, and the cause is unknown. The next step is the Intel PMC debug files (`/sys/kernel/debug/pmc_core/`, root only), which show which part blocks deeper states.
+- **Warn when the GPU won't sleep:** the dashboard already reads the GPU's `runtime_status` without waking it. It could warn when the GPU stays awake for over a minute, which would have caught the `nvidia-powerd` regression on the day of the upgrade.
 - **Battery health:** 75.8%, which shortens runtime separately from everything above.

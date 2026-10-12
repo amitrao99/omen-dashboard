@@ -67,10 +67,15 @@ Each step is done once and survives reboots. Run them from the repository folder
    ```
    The first file stops the NVIDIA display modules from loading. An NVIDIA rule loads them whenever the driver starts, and while they are loaded the GPU never sleeps. The second file points apps' EGL and Vulkan libraries at Intel graphics, so Xwayland and browsers no longer open the NVIDIA GPU.
 3. **Avoid tools that read the GPU every second**, such as CoolerControl. Every reading wakes the GPU. This app's fan service and dashboard skip the GPU while it sleeps and use the CPU temperature instead.
-4. **Reboot, and log in with Wayland:** on the login screen, click your name, then the gear icon, and choose **Ubuntu** (not "Ubuntu on Xorg").
+4. **Stop NVIDIA's Dynamic Boost daemon**, which holds the GPU open for as long as it runs:
+   ```bash
+   sudo systemctl mask --now nvidia-powerd
+   ```
+   Dynamic Boost shifts power from the CPU to the GPU under load, so it does nothing while the GPU is unused. Mask it rather than disable it: each new driver series installs it in a new package, which enables it again.
+5. **Reboot, and log in with Wayland:** on the login screen, click your name, then the gear icon, and choose **Ubuntu** (not "Ubuntu on Xorg").
 
-- **Check it:** `cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status` prints `suspended` while the GPU is off. `lspci -D | grep -i nvidia` shows your GPU's address if it differs. If it stays `active`, `sudo lsof /dev/nvidia*` lists the programs holding it.
-- **Undo:** `sudo rm /etc/modprobe.d/nvidia-no-display.conf /etc/environment.d/90-nvidia-hidden.conf`, then `sudo update-initramfs -u` and reboot. Apps can use the GPU again, which keeps it awake (the 22.6 W row). `sudo prime-select intel` blocks the driver again and brings back the 46 W.
+- **Check it:** `cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status` prints `suspended` while the GPU is off. `lspci -D | grep -i nvidia` shows your GPU's address if it differs. If it stays `active`, `sudo lsof /dev/nvidia*` lists the programs holding it. Check again after every driver update or Ubuntu upgrade; see [Preventing a repeat](docs/battery-drain-rca.md#preventing-a-repeat).
+- **Undo:** `sudo rm /etc/modprobe.d/nvidia-no-display.conf /etc/environment.d/90-nvidia-hidden.conf`, then `sudo update-initramfs -u` and reboot. Apps can use the GPU again, which keeps it awake (the 22.6 W row). `sudo prime-select intel` blocks the driver again and brings back the 46 W. `sudo systemctl unmask nvidia-powerd`, then `sudo systemctl enable --now nvidia-powerd`, brings back Dynamic Boost.
 
 ## Context
 
