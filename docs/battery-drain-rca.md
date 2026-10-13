@@ -27,7 +27,7 @@ On 12 October 2026, after the upgrade to Ubuntu 26.04, the GPU stopped sleeping 
 
 ## How the numbers were measured
 
-- **Whole laptop:** the battery's own energy counter (`/sys/class/power_supply/BAT0/energy_now`), read on battery. It updates about once a second. Each measurement ran from one counter change to another, over 60 to 92 seconds. This battery has no `power_now` or `current_now` sensor, so the energy counter is the only source.
+- **Whole laptop:** the battery's own energy counter (`/sys/class/power_supply/BAT0/energy_now`), read on battery. It updates about once a second. Each measurement ran from one counter change to another, over 60 to 92 seconds. Linux shows no working `power_now` or `current_now` for this battery, so the energy counter was the only source during the investigation. The embedded controller does have a live current sensor; see [Whole-laptop power sensor](#whole-laptop-power-sensor-13-october-2026).
 - **Noise:** two identical baseline runs read 45.8 W and 46.5 W, so differences under about 1 W are not meaningful.
 - **CPU chip:** Intel RAPL energy counters, read through `turbostat` as root.
 - **Not measurable:** the firmware's platform sensor (RAPL `psys`) reads 0.11 W, so it isn't implemented. No sensor covers the screen, RAM, SSD, Wi-Fi, fans or chipset. Those were measured by switching parts off and comparing, or estimated.
@@ -168,6 +168,61 @@ Each fix can be undone by something outside this repository. Driver-series chang
 
 **After every driver update or Ubuntu upgrade**, run the [Verification](#verification) block. If `runtime_status` says `active` for more than a few seconds, `sudo lsof /dev/nvidia*` names the culprit. Don't check with `nvidia-smi`: it wakes the GPU, so it can't show whether the GPU sleeps.
 
+## Whole-laptop power sensor (13 October 2026)
+
+After a boot on a full battery, the dashboard's LAPTOP POWER tile showed about 2 W. The real draw was about 14 W.
+
+### Why the tile showed 2 W
+
+The battery's energy counter stayed at exactly `energy_full` (63.377 Wh) for 10 minutes after the laptop booted on a full charge. It didn't step once. Meanwhile `voltage_now` changed on every read, so the firmware was answering. At 20:14:27 the counter jumped straight to 59.880 Wh and stepped normally after that. Every earlier measurement had started below 100%, so this "hold at full" behavior never showed before.
+
+The tile's live line is the CPU chip plus "the rest of the laptop", where the rest is the battery's fit minus the CPU chip. A frozen counter fits to 0 W, so the rest came out as 0 and the tile showed the CPU chip alone. Neither the Ubuntu 26.04 upgrade nor the move to KDE (KWin) was involved: `energy_now` comes from the battery firmware through ACPI.
+
+The first measurement after the counter moved read **14.1 W** over 62 s, CPU 2.4% busy, brightness 36%. turbostat put the CPU chip at **1.3 W** (cores 0.56 W, Intel graphics 0.18 W), far below the 4–5 W measured during the investigation. The chip as a whole still never went below PC3.
+
+### The sensor in the embedded controller
+
+The DSDT's `_BST` (battery status) calls `UPBS`, which fills in the battery's rate like this:
+
+```
+If (BRTM == One)  →  rate = ATOW(EC.MCUR)     // the battery's live current
+Else              →  rate = 0xFFFFFFFF        // "unknown"
+```
+
+`BRTM` is a flag in a memory block the BIOS fills in (`EXBU`, at 0x54D2B018). On this laptop it isn't 1, so `_BST` always reports the rate as unknown, and the kernel answers `power_now` with "No such device" (`-ENODEV`). The current is there all the same, in the EC's memory:
+
+| Field | EC offset | Meaning |
+|---|---|---|
+| `MBST` | 0x82 | Battery state; bit 0 means discharging |
+| `MCUR` | 0x83–0x84 | Current in mA, signed 16-bit, negative while discharging |
+| `MBRM` | 0x85–0x86 | Remaining charge in mAh |
+| `MBCV` | 0x87–0x88 | Voltage in mV |
+| `BVLB`, `BVHB` | 0x74, 0x75 | Design voltage in mV (11,580) |
+
+The same code explains the counter's steps. `MBRM` counts in mAh, and `ATOW` converts it to mWh with the *design* voltage: 1 mAh × 11.58 V = 11.58 mWh, the "~12 mWh step" the probe measured. So the counter steps each time 1 mAh is used, at irregular times.
+
+Six readings of the EC through `ec_sys`, read-only, one second apart:
+
+| State | Current | Voltage | Power |
+|---|---|---|---|
+| 0x01 | −1143 mA | 12,102 mV | 13.83 W |
+| 0x01 | −1206 mA | 12,091 mV | 14.58 W |
+| 0x01 | −1140 mA | 12,102 mV | 13.80 W |
+| 0x01 | −1135 mA | 12,119 mV | 13.76 W |
+| 0x01 | −1124 mA | 12,083 mV | 13.58 W |
+| 0x01 | −1095 mA | 12,119 mV | 13.27 W |
+
+These average 13.8 W, against 14.1 W from the energy counter a few minutes earlier. The voltage matches `voltage_now` (12.09–12.14 V). The current changes every second, so it's a live reading, not a cached value.
+
+### What the dashboard does now
+
+On battery, the LAPTOP POWER tile takes its live line from the EC: current × voltage, every second, labelled "Battery sensor · 1 s". The battery counter's 15 s fit is still drawn as the blue line. The EC reading also recalibrates "the rest of the laptop", so on the charger the estimated line starts from a fresh value.
+
+- **Root only.** The dashboard loads `ec_sys` if it isn't loaded. It loads it with write support, the same as the fan controller, because a module loaded without it stays loaded and the fan controller could then no longer write. The power code only reads.
+- **Other models are protected.** The EC reading is used only while the battery is discharging, its current is negative, and its voltage is within 300 mV of the kernel's `voltage_now`. A model with a different register map fails that check and falls back to the counters.
+- **On the charger** the EC reports the battery's charging current, not what the laptop uses, so the counters remain the source there.
+- **Without the EC** (not root, or a different model), the tile works as before, including the 2 W reading while a full battery's counter is frozen.
+
 ## False leads and corrections
 
 These were wrong turns during the investigation. They're recorded so that nobody repeats them.
@@ -180,6 +235,8 @@ These were wrong turns during the investigation. They're recorded so that nobody
 | The NVIDIA GPU was off, because PCI D3cold, ACPI and `real_power_state` all said so | It was drawing about 34 W. Software power states describe what the kernel requested, not what the hardware is doing. |
 | Forcing the GPU's port on added only 2.5 W, so the GPU really was off | The GPU was already powered, so switching the port on changed little |
 | The NVIDIA console framebuffer (`nvidia_drm fbdev=1`, the default since driver 570) kept the GPU awake | With `fbdev=0` it still never slept. Blocking the display modules entirely (#4) is what worked. |
+| The 2 W reading after the 26.04 upgrade and the move to KDE meant something in the new system broke power reporting | The battery firmware holds its counter at "full" for about 10 minutes after a full charge. See [Whole-laptop power sensor](#whole-laptop-power-sensor-13-october-2026). |
+| This battery has no current sensor, because `power_now` fails | The EC has one (`MCUR`); the firmware withholds it because the BIOS flag `BRTM` isn't set |
 | The GNOME udev rule would let the GPU sleep | It made GNOME let go of the GPU, but the display modules and other programs still held it. It was dropped once #4 made it unnecessary. |
 
 ## Changes made
@@ -235,4 +292,5 @@ echo "scale=1; ($e0 - $e1) * 3600 / 90 / 1000000" | bc   # watts
 - **PCI runtime power saving:** turning it on for the 11 devices that have it off saved 3.7 W in the switch-off test. That would bring the laptop to roughly 11 W (an estimate; not yet measured in the final setup).
 - **CPU chip never goes below PC3:** PC6, PC8 and PC10 stay at 0%, and the cause is unknown. The next step is the Intel PMC debug files (`/sys/kernel/debug/pmc_core/`, root only), which show which part blocks deeper states.
 - **Warn when the GPU won't sleep:** the dashboard already reads the GPU's `runtime_status` without waking it. It could warn when the GPU stays awake for over a minute, which would have caught the `nvidia-powerd` regression on the day of the upgrade.
+- **Faster readings without root:** the counter steps once per mAh used, so timing those steps (energy between the first and last step ÷ the time between them) would beat the 15 s straight-line fit. It still can't help while the counter holds at "full".
 - **Battery health:** 75.8%, which shortens runtime separately from everything above.
