@@ -170,7 +170,8 @@ class PowerSampler(QThread):
 
 
 class LaptopPowerSampler(QThread):
-    """Reads the battery and CPU chip counters every second, off the GUI thread: battery reads go through ACPI."""
+    """Reads the battery, the EC and the CPU chip counters every second, off the GUI thread: battery and EC reads go
+    through the embedded controller, which can be slow."""
 
     updated = pyqtSignal(object)
 
@@ -188,6 +189,8 @@ class LaptopPowerSampler(QThread):
             zones = laptop_power.package_zones()
         except OSError:
             zones = []
+        if os.geteuid() == 0:
+            laptop_power.load_ec_sys()
         while True:
             try:
                 self.updated.emit(self.estimator.update(time.monotonic(), laptop_power.read_sample(zones)))
@@ -1245,6 +1248,8 @@ class Dashboard(QMainWindow):
             status = "No battery"
         elif reading["on_ac"]:
             status = "On charger · estimated" if live is not None else "On charger · unplug to calibrate"
+        elif reading.get("source") == "ec":
+            status = "Battery sensor · 1 s"
         elif battery is None:
             status = f"Calibrating ({window})"
         else:
